@@ -1,34 +1,57 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const OpenAI = require("openai");
+const rateLimit = require("express-rate-limit");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getChatReply } = require("./services/chatbot"); // Fallback response function
 
 dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const limiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 10, // limit each IP to 10 requests per window
+    message: "Too many requests, please try again later."
+});
 
+app.use(limiter);
+
+// Initialize Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+async function getGeminiResponse(message) {
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const result = await model.generateContent(message);
+        return result.response.text();
+    } catch (error) {
+        console.error("Gemini API Error:", error.message || error);
+        throw new Error("AI service unavailable. Please try again later.");
+    }
+}
+
+// Chatbot API Route
 app.post("/chat", async (req, res) => {
     try {
         const { message } = req.body;
-        
-        // AI system prompt for medical chatbot
-        const systemPrompt = "You are a medical chatbot. Answer queries about medical consultations, fees, and clinic schedules.";
+        if (!message) return res.status(400).json({ error: "Message is required" });
 
-        const response = await openai.chat.completions.create({
-            model: "gpt-4",
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: message }
-            ],
-        });
-
-        res.json({ reply: response.choices[0].message.content });
+        const reply = await getGeminiResponse(message);
+        res.json({ reply });
     } catch (error) {
-        res.status(500).json({ error: "Error generating response" });
+        console.error("Error generating response:", error.message);
+
+        // Fallback response if API fails
+        try {
+            const reply = getChatReply(req.body.message);
+            res.json({ reply });
+        } catch (fallbackError) {
+            console.error("Fallback response error:", fallbackError);
+            res.status(500).json({ error: "Error generating response" });
+        }
     }
 });
 
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.listen(3000, () => console.log("✅ Server running on port 3000"));
